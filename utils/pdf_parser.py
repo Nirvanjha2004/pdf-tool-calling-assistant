@@ -203,29 +203,76 @@ def _extract_with_rapidocr(pdf_path: str) -> str:
 
 # ─── Main orchestrator ────────────────────────────────────────────────────────
 
+def _is_equation_heavy(pdf_path: str, extracted_text: str) -> bool:
+    """
+    Heuristic: returns True when a PDF likely has embedded equation images
+    that text extraction missed.
+
+    Signal: chars-per-page is low relative to what a text-only page would have,
+    AND the text contains question/answer patterns (Q., options like (A) (B))
+    with suspiciously short or absent option content.
+    """
+    try:
+        doc = pdfium.PdfDocument(pdf_path)
+        num_pages = max(len(doc), 1)
+    except Exception:
+        num_pages = 1
+
+    chars_per_page = len(extracted_text) / num_pages
+
+    # A typical text page has 1500-3000 chars. Math exam PDFs with embedded
+    # equations often come in at <800 chars/page because the equations are gone.
+    if chars_per_page > 1200:
+        return False  # Plenty of text — no need for OCR
+
+    # Secondary signal: option lines with nothing after them, e.g. "(A) \n(B)"
+    import re
+    empty_options = re.findall(r'\([A-D]\)\s*\n', extracted_text)
+    return len(empty_options) >= 2  # 2+ blank options = almost certainly equation PDF
+
+
 def extract_text_from_pdf(pdf_path: str) -> tuple[str, str]:
     """
-    Extract all text from a PDF using the 3-tier pipeline.
+    Extract all text from a PDF using a smart 3-tier pipeline.
+
+    For PDFs that contain embedded image objects (e.g. MathType equations
+    exported from Word), text extraction alone misses the math. In that case
+    we run OCR on every page and merge it with the extracted text so both
+    the prose AND the equations are captured.
 
     Returns:
         (text, method) where method is one of:
-        'pypdfium2', 'pdfplumber', 'easyocr', or 'none'
+        'pypdfium2', 'pdfplumber', 'rapidocr', 'pypdfium2+ocr', or 'none'
     """
-    # Tier 1 — pypdfium2
+    # Tier 1 — pypdfium2 (fastest)
     text = _extract_with_pypdfium2(pdf_path)
-    if len(text) >= 50:
-        logger.info("Extracted via pypdfium2 (%d chars)", len(text))
+    has_text = len(text) >= 50
+
+    # Tier 2 — pdfplumber fallback if pypdfium2 got nothing
+    if not has_text:
+        logger.info("pypdfium2 got too little text, trying pdfplumber...")
+        text = _extract_with_pdfplumber(pdf_path)
+        has_text = len(text) >= 50
+
+    # Check whether the PDF has embedded image objects (equations, figures)
+    # If so, merge OCR output even though we already have text — this picks
+    # up MathType/Word equation images that text extraction silently skips.
+    if has_text and _is_equation_heavy(pdf_path, text):
+        logger.info("Equation-heavy PDF detected — merging OCR for math expressions...")
+        ocr_text = _extract_with_rapidocr(pdf_path)
+        if ocr_text:
+            merged = text + "\n\n--- OCR pass (equations/images) ---\n" + ocr_text
+            logger.info("Merged text+OCR (%d chars)", len(merged))
+            return merged, "pypdfium2+ocr"
         return text, "pypdfium2"
 
-    # Tier 2 — pdfplumber
-    logger.info("pypdfium2 got too little text, trying pdfplumber...")
-    text = _extract_with_pdfplumber(pdf_path)
-    if len(text) >= 50:
-        logger.info("Extracted via pdfplumber (%d chars)", len(text))
-        return text, "pdfplumber"
+    if has_text:
+        method = "pypdfium2" if "pypdfium2" not in locals() else "pypdfium2"
+        logger.info("Extracted via text (%d chars)", len(text))
+        return text, "pypdfium2"
 
-    # Tier 3 — rapidocr
-    logger.info("Both text tiers failed, falling back to RapidOCR...")
+    # Tier 3 — pure OCR (fully image-based PDF)
+    logger.info("Both text tiers failed, falling back to pure RapidOCR...")
     text = _extract_with_rapidocr(pdf_path)
     if text:
         logger.info("Extracted via rapidocr (%d chars)", len(text))

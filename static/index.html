@@ -550,10 +550,11 @@
 
     // Step 2 — Poll GET /job/{id} until done
     const METHOD_LABELS = {
-      pypdfium2:  '⚡ fast extract',
-      pdfplumber: '📄 text extract',
-      rapidocr:   '🔍 OCR',
-      none:       '',
+      pypdfium2:        '⚡ fast extract',
+      pdfplumber:       '📄 text extract',
+      'pypdfium2+ocr':  '⚡+🔍 text & OCR',
+      rapidocr:         '🔍 OCR',
+      none:             '',
     };
 
     let dots = 0;

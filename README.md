@@ -1,51 +1,36 @@
 # 📄 PDF Q&A Assistant with Tool-Calling
 
-**Learn how LLM tool-calling / function calling works — by building it yourself.**
+A full-stack PDF question-answering assistant that demonstrates how LLM tool-calling works — built from scratch with no agent frameworks.
 
-No agent frameworks. No vector databases. Just pure tool-calling: you define functions, the LLM decides when to call them, your code executes them, and the result flows back to the LLM.
+Upload any PDF (text, scanned, or math-heavy), ask natural-language questions, and watch the AI automatically decide which tool to use: search the document, run a calculation, or answer from its own knowledge.
 
 ---
 
-## 🧠 What is Tool-Calling?
+## ✨ Features
 
-Tool-calling (also called function calling) is how LLMs interact with the outside world.
+- **Instant uploads** — file is accepted immediately; extraction runs in the background
+- **3-tier PDF extraction** — text PDFs, scanned PDFs (OCR), and math PDFs with embedded equation images all handled automatically
+- **LaTeX math rendering** — MathJax renders equations from the LLM's response in real time
+- **ReAct-style tool loop** — reliable tool calling without Groq's native tool_calls API
+- **Safe math evaluator** — AST-based, no `eval()`, supports `math.*` functions
+- **Conversation history** — multi-turn chat with context carried across questions
+- **Beautiful UI** — aurora glass design, drag & drop upload, animated progress
 
-### The Flow
+---
+
+## 🧠 How Tool-Calling Works
+
+Tool-calling is how LLMs interact with external functions. Instead of guessing an answer, the model decides to call a tool, your code runs it, and the result flows back.
 
 ```
-You: "What's 15% of 2400?"
+User: "Give me questions from the PDF"
 
-                ┌─────────────────────────┐
-                │    Your Python Code      │
-                │                         │
-User ──► LLM ──►  "Call calculate() with  │──► Execute function
-                │   args: '0.15 * 2400'"  │    → "360.0"
-                │                         │
-                └─────────┬───────────────┘
-                          │  Result fed back
-                          ▼
-                ┌─────────────────────────┐
-                │    LLM says:            │
-                │  "15% of 2400 is 360."  │──► You see the answer
-                └─────────────────────────┘
+  LLM output:   TOOL_CALL: search_document {"query": "questions"}
+  Your code:    runs search_document() → returns chunk text
+  LLM output:   "Here are the questions from the document: ..."
 ```
 
-### Step by Step
-
-1. **You define a "tool"** — a normal Python function + a JSON schema describing it
-2. **You send the tool definitions + user message to the LLM**
-3. **The LLM decides** if it needs a tool. If yes, it outputs structured JSON:
-   ```json
-   {
-     "name": "calculate",
-     "arguments": "{\"expression\": \"0.15 * 2400\"}"
-   }
-   ```
-4. **Your code** receives this JSON, calls the real Python function, gets the result
-5. **You send the result back** to the LLM as a "tool" role message
-6. **The LLM** uses the result to craft its final response to the user
-
-That's it. No magic. No agents. Just functions + JSON.
+This project uses a **ReAct-style pattern** — the model writes `TOOL_CALL:` as plain text, your code parses it, executes the function, injects the result as `TOOL_RESULT:`, and loops until the model gives a final answer. No JSON schema sent to the API, no native tool_calls — just reliable plain-text completions.
 
 ---
 
@@ -53,21 +38,22 @@ That's it. No magic. No agents. Just functions + JSON.
 
 ```
 pdf-tool-calling-assistant/
-├── tools/
-│   ├── calculator.py       # Tool 1: safe math evaluation
-│   └── pdf_search.py       # Tool 2: keyword search in PDF text
-├── core/
-│   ├── llm_client.py       # Groq API wrapper + tool-calling loop
-│   └── chat_loop.py        # Tool registration + interactive CLI
-├── utils/
-│   └── pdf_parser.py       # Extract text from PDF + chunk it
 ├── api/
-│   └── main.py             # FastAPI REST endpoint
+│   └── main.py             # FastAPI server — /upload, /job/{id}, /ask, /health
+├── core/
+│   ├── llm_client.py       # Groq API wrapper + ReAct tool-calling loop
+│   └── chat_loop.py        # Tool registration, system prompt, ask() API
+├── tools/
+│   ├── calculator.py       # Safe AST-based math evaluator
+│   └── pdf_search.py       # Keyword search + async background PDF loading
+├── utils/
+│   └── pdf_parser.py       # 3-tier PDF text extraction pipeline
+├── static/
+│   └── index.html          # Single-file frontend (vanilla JS + MathJax)
 ├── data/
-│   └── sample_pdfs/        # Put your PDFs here
+│   └── sample_pdfs/        # Sample PDFs for testing
 ├── .env.example
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
 ---
@@ -76,16 +62,22 @@ pdf-tool-calling-assistant/
 
 ### 1. Get a Groq API Key
 
-Groq offers free API access with blazing-fast inference.
-
 - Go to [console.groq.com/keys](https://console.groq.com/keys)
-- Create an API key (starts with `gsk_`)
-- Set it as an environment variable:
+- Create a free API key (starts with `gsk_`)
+
+### 2. Set Up Environment
 
 ```bash
-# Windows (Command Prompt)
-set GROQ_API_KEY=gsk_your_key_here
+cd pdf-tool-calling-assistant
 
+# Copy and fill in your key
+copy .env.example .env
+# Edit .env and set: GROQ_API_KEY=gsk_your_key_here
+```
+
+Or set it directly:
+
+```bash
 # Windows (PowerShell)
 $env:GROQ_API_KEY='gsk_your_key_here'
 
@@ -93,16 +85,23 @@ $env:GROQ_API_KEY='gsk_your_key_here'
 export GROQ_API_KEY='gsk_your_key_here'
 ```
 
-Or copy `.env.example` to `.env` and fill in your key.
-
-### 2. Install Dependencies
+### 3. Install Dependencies
 
 ```bash
-cd pdf-tool-calling-assistant
 pip install -r requirements.txt
 ```
 
-### 3. Run the Interactive CLI
+> **Note:** `rapidocr-onnxruntime` installs ONNX Runtime (~50MB). The OCR model weights (~5MB) are downloaded automatically on first use.
+
+### 4. Run the Web App
+
+```bash
+python -m api.main
+```
+
+Open [http://localhost:8000](http://localhost:8000), upload a PDF, and start asking questions.
+
+### 5. Or Use the CLI
 
 ```bash
 # Without a document
@@ -112,105 +111,141 @@ python -m core.chat_loop
 python -m core.chat_loop path/to/your/document.pdf
 ```
 
-### 4. Run the API Server
-
-```bash
-python -m api.main
-```
-
-Then open http://localhost:8000 in your browser, or use curl:
-
-```bash
-# Upload a PDF
-curl -X POST -F "file=@data/sample_pdfs/resume.pdf" http://localhost:8000/upload
-
-# Ask a question
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"question": "What is the candidate's experience with Python?"}' \
-  http://localhost:8000/ask
-```
+CLI commands: `/load <path>`, `/status`, `/clear`, `/help`, `/quit`
 
 ---
 
 ## 🔧 Available Tools
 
-### 1. Calculator (`calculate`)
-- **What it does**: Evaluates math expressions safely
-- **When the LLM uses it**: Any question involving numbers, percentages, computations
-- **Examples**: "What's 15% of 2400?", "If I have 500 apples and give away 30%, how many remain?", "Calculate the square root of 144"
+### `search_document(query)`
+Searches the uploaded PDF using keyword overlap scoring across word-level chunks (300 words, 30-word overlap). Returns the top 3 most relevant chunks, or all chunks for broad/summarization queries. Capped at 6000 chars to stay within LLM context limits.
 
-### 2. Document Search (`search_document`)
-- **What it does**: Searches the uploaded PDF using keyword overlap
-- **When the LLM uses it**: Questions about the document content
-- **Examples**: "What is this paper about?", "Summarize the candidate's skills", "What methodology did they use?"
+**Used when:** the user asks about document content — questions, summaries, specific topics.
 
----
+### `calculate(expression)`
+Safely evaluates math expressions using Python's `ast` module. Supports arithmetic, exponentiation, modulo, `math.sqrt()`, `math.sin()`, `math.cos()`, `math.tan()`, `math.log()`, `math.pi`, `math.e`, and more.
 
-## 🧪 Try These Test Questions
-
-After uploading a PDF like a resume or research paper:
-
-| Question | Expected Tool Use |
-|---|---|
-| "What is this document about?" | `search_document` |
-| "How many years of experience does the candidate have?" | `search_document` + possibly `calculate` |
-| "What's 25% of the total pages?" | `calculate` |
-| "What's the capital of France?" | No tool (LLM knowledge) |
-| "Summarize the key findings" | `search_document` |
-| "If the sample size is 1000 and 35% responded, how many is that?" | `calculate` |
+**Used when:** the user asks anything involving numbers or computation.
 
 ---
 
-## 📚 Learning Path
+## 📄 PDF Extraction Pipeline
 
-### Phase 0: Understand Tool-Calling (theory)
-- Read: [Groq Function Calling Docs](https://console.groq.com/docs/tool-use)
-- Read: This README's "What is Tool-Calling" section
-- Key insight: The LLM outputs JSON, your code executes it
+Extraction runs in a background thread so uploads return instantly. The frontend polls `/job/{id}` every 600ms until done.
 
-### Phase 1: Calculator Tool Only (what's built)
-- Single tool: `calculate(expression)`
-- Test: "What's 15% of 200?" → LLM calls calculate → returns answer
-- Understand: The tool-calling loop (LLM → execute → feed back)
+```
+Tier 1: pypdfium2      →  fastest, handles most standard PDFs
+           ↓ (< 50 chars extracted)
+Tier 2: pdfplumber     →  better at complex layouts and tables
+           ↓ (< 50 chars extracted)
+Tier 3: RapidOCR       →  fully scanned / image-only PDFs
 
-### Phase 2: PDF Extraction (what's built)
-- `pdfplumber` extracts text from PDFs
-- Text is split into overlapping chunks (500 words, 50 overlap)
-- No vector DB — just plain text chunks in memory
+Special case: if Tier 1/2 succeeds but the PDF has low text density
+AND blank answer options — it's a math PDF with embedded equation images
+(e.g. Word + MathType export). OCR runs anyway and is merged with the
+text output so both prose AND equations are captured.
+              ↓
+         pypdfium2+ocr
+```
 
-### Phase 3: Document Search Tool (what's built)
-- Second tool: `search_document(query)`
-- LLM now chooses between calculate, search, or answer from knowledge
-- Keyword scoring finds relevant chunks
+The extraction method is shown in the UI after upload:
+- ⚡ fast extract — pypdfium2
+- 📄 text extract — pdfplumber
+- 🔍 OCR — RapidOCR
+- ⚡+🔍 text & OCR — merged (equation-heavy PDFs)
 
-### Phase 4: API Wrapper (what's built)
-- FastAPI with `/upload` and `/ask` endpoints
-- Stateless: document stays in memory until next upload
+**OCR performance:** RapidOCR uses PP-OCR mobile models via ONNXRuntime — ~3-5× faster than easyocr on CPU. Pages are rendered at 150 DPI, capped at 1600px wide, converted to grayscale, and processed concurrently across a thread pool.
+
+The OCR engine pre-warms at server startup in a background thread so it's ready before the first image PDF arrives.
+
+---
+
+## 🌐 API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Serves the web frontend |
+| `GET` | `/health` | Server status, document loaded state, chunk count |
+| `POST` | `/upload` | Upload a PDF. Returns `{job_id, message}` immediately |
+| `GET` | `/job/{job_id}` | Poll upload status: `pending \| running \| done \| error` |
+| `POST` | `/ask` | Ask a question. Body: `{question, history?}` → `{answer}` |
+
+### Example: curl
+
+```bash
+# Upload
+curl -X POST -F "file=@notes.pdf" http://localhost:8000/upload
+# → {"job_id": "abc123", "message": "Upload received. Processing started."}
+
+# Poll until done
+curl http://localhost:8000/job/abc123
+# → {"status": "done", "chunks_count": 8, "method": "pypdfium2", ...}
+
+# Ask
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"question": "What are the main topics?"}' \
+  http://localhost:8000/ask
+# → {"answer": "The document covers..."}
+```
+
+---
+
+## ⚙️ Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GROQ_API_KEY` | *(required)* | Your Groq API key |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model to use |
+| `PORT` | `8000` | Server port |
+| `OCR_DPI` | `150` | Render DPI for OCR pages |
+| `OCR_MAX_WIDTH_PX` | `1600` | Max page width before downscaling |
+| `OCR_WORKERS` | CPU count | Parallel OCR threads |
+| `MAX_QUESTION_CHARS` | `4000` | Max question length |
+| `MAX_HISTORY_MESSAGES` | `20` | Max conversation history entries |
+| `LLM_MAX_RETRIES` | `2` | LLM call retry attempts |
+| `LLM_RETRY_BACKOFF_SECONDS` | `1.5` | Backoff between retries |
 
 ---
 
 ## 💡 What You'll Learn
 
-- ✅ How tool-calling / function calling actually works (JSON in, JSON out)
-- ✅ How to define tools with JSON Schema
-- ✅ How to implement the tool-calling loop (LLM → execute → feed back)
-- ✅ How the LLM decides WHICH tool to use (tool_choice="auto")
-- ✅ How to handle multiple tools
-- ✅ How to extract text from PDFs and chunk it for search
-- ✅ How to build a simple FastAPI wrapper
+- ✅ How tool-calling / function calling works end-to-end
+- ✅ Why ReAct-style prompting can be more reliable than native tool APIs
+- ✅ How to build a multi-tier PDF extraction pipeline (text → OCR)
+- ✅ How to handle async background jobs in FastAPI
+- ✅ How to render LaTeX in a browser chat UI with MathJax
+- ✅ Safe expression evaluation with Python's `ast` module
+- ✅ Conversation history management and context injection
 
 ---
 
-## 🚀 Next Steps (After This Project)
+## 🔬 Architecture Deep Dive
 
-1. **Add a vector search tool** — Replace keyword search with embeddings (sentence-transformers) + cosine similarity
-2. **Add a web search tool** — Let the LLM fetch real-time information
-3. **Add a code execution tool** — Run Python code in a sandbox
-4. **Add memory** — Store conversations so the LLM remembers context
-5. **Try multi-agent** — After you're comfortable with tool-calling, explore agent frameworks
+### Why ReAct instead of Groq's native tool_calls?
+
+`llama-3.3-70b-versatile` consistently generated malformed tool call JSON with Groq's native tool_calls API — specifically missing the `>` separator between function name and arguments, e.g. `<function=search_document {"query": ...}` — which Groq's API rejected with a 400 `tool_use_failed` error.
+
+The ReAct approach bypasses this entirely: the model writes `TOOL_CALL: search_document {"query": "..."}` as plain text, a regex parses it, and the result is injected back as a user message. This is 100% reliable across all Groq models.
+
+### Math PDF handling
+
+Many math exam PDFs are created by exporting Word documents with MathType equations. The equations are embedded as image objects while the surrounding text (question stems, option labels) is selectable text. `pypdfium2` extracts the text but silently skips the image objects, leaving blank answer options.
+
+Detection heuristic: if chars-per-page < 1200 **and** there are 2+ blank answer option lines `(A)\n(B)\n`, the PDF is classified as equation-heavy and OCR is run over every page. The OCR output is merged with the text extraction, capturing both the prose and the equations.
+
+---
+
+## 🚀 Next Steps
+
+1. **Vector search** — replace keyword overlap with sentence embeddings + cosine similarity for semantic search
+2. **Multi-document support** — index multiple PDFs and search across all of them
+3. **Web search tool** — let the LLM fetch real-time information
+4. **Code execution tool** — run Python in a sandbox for data analysis
+5. **Persistent storage** — save uploaded documents and conversation history to a database
+6. **Streaming responses** — stream the LLM response token-by-token for faster perceived latency
 
 ---
 
 ## 📝 License
 
-MIT — Do whatever you want with this. Built for learning.
+MIT — use it however you want. Built for learning.

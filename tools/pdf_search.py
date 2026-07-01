@@ -156,15 +156,26 @@ def search_document(query: str) -> str:
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
+    # Cap total text sent to LLM at ~6000 chars to avoid hitting token limits
+    MAX_CHARS = 6000
+
     if scored[0][0] == 0:
         # No keyword match — return all chunks for summarization queries
         parts = ["Here is the full content extracted from the document:"]
-        parts += [f"[Chunk {idx + 1}]\n{text}" for _, text, idx in scored]
+        total = 0
+        for _, text, idx in scored:
+            if total + len(text) > MAX_CHARS:
+                break
+            parts.append(f"[Chunk {idx + 1}]\n{text}")
+            total += len(text)
     else:
-        parts = [
-            f"[Chunk {idx + 1} — relevance: {score}]\n{text}"
-            for score, text, idx in scored[:3]
-        ]
+        parts = []
+        total = 0
+        for score, text, idx in scored[:3]:
+            if total + len(text) > MAX_CHARS:
+                break
+            parts.append(f"[Chunk {idx + 1} — relevance: {score}]\n{text}")
+            total += len(text)
 
     return "\n\n".join(parts)
 

@@ -30,26 +30,28 @@ register_tool("search_document", SEARCH_TOOL, search_handler)
 
 # ─── System Prompt ───────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a helpful PDF Q&A assistant with access to tools.
+SYSTEM_PROMPT = """You are a helpful PDF Q&A assistant with access to two tools.
 
-## Available Tools
+To call a tool, output ONLY this on its own line — nothing before or after:
+TOOL_CALL: tool_name {"key": "value"}
 
-1. **calculate(expression)** — Evaluate math expressions.
-   USE WHEN: The user asks anything involving numbers, calculations,
-   percentages, statistics, or computations.
+Then STOP. Wait for the TOOL_RESULT. After receiving it, write your final answer.
 
-2. **search_document(query)** — Search within the uploaded PDF document.
-   USE WHEN: The user asks about the content of their document
-   (resume, research paper, job description, etc.).
+Example interaction:
+User: give me questions from the pdf
+Assistant: TOOL_CALL: search_document {"query": "questions"}
+User: TOOL_RESULT: search_document
+[chunk content with questions]
+Assistant: Here are the questions from the document: ...
 
-## Your Behavior
-
-- For math questions → ALWAYS use the calculator tool.
-- For document questions → ALWAYS search the document first, then summarize or answer based on the returned chunks.
-- If the user asks something general like "tell me about the PDF" or "summarize the document", search with a broad query like "main topic content" and summarize what you find.
-- NEVER say you couldn't find information if the search tool returned chunk content — use that content to answer.
-- For general knowledge → Answer from your own knowledge.
-- Be concise, clear, and helpful."""
+Rules:
+- ALWAYS call search_document first when asked about PDF content.
+- ALWAYS call calculate for math computations.
+- After a TOOL_RESULT, write the answer — do NOT call another tool.
+- Format math with LaTeX: inline \\(expr\\), display \\[expr\\].
+- For multiple choice with math, one option per line:
+  (A) \\(\\frac{\\pi}{6}\\)
+  (B) \\(\\frac{\\pi}{3}\\)"""
 
 
 # ─── Programmatic API ────────────────────────────────────────────────────────

@@ -4,6 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PDF Q&A Assistant</title>
+
+<!-- MathJax — renders LaTeX math from the LLM response -->
+<script>
+  window.MathJax = {
+    tex: {
+      inlineMath:  [['\\(', '\\)'], ['$', '$']],
+      displayMath: [['\\[', '\\]'], ['$$', '$$']],
+      processEscapes: true,
+    },
+    options: {
+      skipHtmlTags: ['script','noscript','style','textarea','pre','code'],
+    },
+    startup: { typeset: false },   // we call MathJax.typesetPromise() manually
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 <style>
   /* ─── Reset & Variables ─── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -696,8 +712,14 @@
     const toolLabels = { calculator: '🧮 Calculator', search: '🔍 Document Search', knowledge: '🧠 Knowledge' };
     if (tool && toolLabels[tool]) toolBadge = `<div class="tool-badge ${tool}">${toolLabels[tool]}</div>`;
 
-    div.innerHTML = `<div class="msg-avatar">🤖</div><div class="msg-bubble">${toolBadge}${renderMarkdown(text)}</div>`;
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.innerHTML = toolBadge + renderMarkdown(text);
+
+    div.innerHTML = '<div class="msg-avatar">🤖</div>';
+    div.appendChild(bubble);
     chatArea.appendChild(div);
+    typesetMath(bubble);
     scrollToBottom();
     return div;
   }
@@ -705,8 +727,15 @@
   function addSystemMsg(text) {
     const div = document.createElement('div');
     div.className = 'msg assistant';
-    div.innerHTML = `<div class="msg-avatar">ℹ️</div><div class="msg-bubble">${renderMarkdown(text)}</div>`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.innerHTML = renderMarkdown(text);
+
+    div.innerHTML = '<div class="msg-avatar">ℹ️</div>';
+    div.appendChild(bubble);
     chatArea.appendChild(div);
+    typesetMath(bubble);
     scrollToBottom();
     return div;
   }
@@ -727,26 +756,58 @@
     return d.innerHTML;
   }
 
+  /**
+   * renderMarkdown — converts markdown + LaTeX to HTML.
+   *
+   * The key trick: extract all math spans FIRST (before any escaping),
+   * replace them with placeholders, do markdown → HTML on the rest,
+   * then put the math back verbatim so MathJax can find it.
+   */
   function renderMarkdown(text) {
-    // Simple markdown-like rendering
+    const mathSlots = [];
+
+    // Helper: stash a math string and return a placeholder
+    function stash(raw) {
+      mathSlots.push(raw);
+      return `\x00MATH${mathSlots.length - 1}\x00`;
+    }
+
+    // 1. Pull out display math  $$...$$  and  \[...\]
+    text = text.replace(/\$\$([\s\S]+?)\$\$/g,  (_, m) => stash(`\\[${m}\\]`));
+    text = text.replace(/\\\[([\s\S]+?)\\\]/g,  (_, m) => stash(`\\[${m}\\]`));
+
+    // 2. Pull out inline math  $...$  and  \(...\)
+    //    The $ regex avoids matching $$ (already consumed above)
+    text = text.replace(/(?<!\$)\$(?!\$)((?:[^$\\]|\\[\s\S])+?)\$(?!\$)/g,
+                        (_, m) => stash(`\\(${m}\\)`));
+    text = text.replace(/\\\(([\s\S]+?)\\\)/g,  (_, m) => stash(`\\(${m}\\)`));
+
+    // 3. Now escape HTML on the non-math parts
     let html = escapeHtml(text);
 
-    // Code blocks
+    // 4. Apply markdown on the escaped text
+    // Code blocks (must come before inline code)
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-
     // Inline code
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
     // Bold
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
     // Italic
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-
     // Line breaks
     html = html.replace(/\n/g, '<br>');
 
+    // 5. Restore math placeholders verbatim (MathJax will handle them)
+    html = html.replace(/\x00MATH(\d+)\x00/g, (_, i) => mathSlots[+i]);
+
     return html;
+  }
+
+  /** Re-run MathJax on a specific DOM element after content is inserted. */
+  function typesetMath(el) {
+    if (window.MathJax && MathJax.typesetPromise) {
+      MathJax.typesetPromise([el]).catch(console.warn);
+    }
   }
 
   function scrollToBottom() {

@@ -11,11 +11,14 @@ Key design decisions:
 import os
 import re
 import sys
+import logging
 import tempfile
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+
+logging.basicConfig(level=logging.INFO)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

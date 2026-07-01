@@ -502,49 +502,116 @@
       return;
     }
 
+    // Reset UI
     uploadArea.classList.add('has-file');
     fileName.textContent = '📄 ' + file.name;
     uploadText.textContent = '';
     uploadProgress.classList.add('active');
-    uploadProgressBar.style.width = '60%';
+    uploadProgressBar.style.width = '15%';
+    documentLoaded = false;
+    input.disabled = true;
+    sendBtn.disabled = true;
 
     const formData = new FormData();
     formData.append('file', file);
 
+    let jobId;
     try {
+      // Step 1 — POST /upload  (returns instantly with a job_id)
       const res = await fetch('/upload', { method: 'POST', body: formData });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || 'Upload failed');
       }
       const data = await res.json();
-      uploadProgressBar.style.width = '100%';
-      setTimeout(() => { uploadProgress.classList.remove('active'); uploadProgressBar.style.width = '0%'; }, 600);
-
-      documentLoaded = true;
-      statusDot.classList.add('loaded');
-      statusLabel.textContent = file.name;
-
-      input.disabled = false;
-      sendBtn.disabled = false;
-      input.focus();
-
-      // Clear previous chat and show welcome on re-upload
-      chatArea.innerHTML = '';
-      welcome.style.display = 'flex';
-      chatArea.appendChild(welcome);
-      history = [];
-
-      addSystemMsg(`📄 **${file.name}** loaded — ${data.chunks_count} chunks indexed. Ready for questions!`);
-      showToast(`Loaded: ${data.chunks_count} chunks`);
-
+      jobId = data.job_id;
+      uploadProgressBar.style.width = '35%';
     } catch (err) {
-      uploadProgress.classList.remove('active');
-      uploadArea.classList.remove('has-file');
-      fileName.textContent = '';
-      uploadText.textContent = 'Upload failed — try again';
+      resetUploadUI();
       showToast(err.message || 'Upload failed');
+      return;
     }
+
+    // Step 2 — Poll GET /job/{id} until done
+    const METHOD_LABELS = {
+      pypdfium2:  '⚡ fast extract',
+      pdfplumber: '📄 text extract',
+      rapidocr:   '🔍 OCR',
+      none:       '',
+    };
+
+    let dots = 0;
+    const pollInterval = setInterval(async () => {
+      try {
+        const r = await fetch(`/job/${jobId}`);
+        const job = await r.json();
+
+        // Animate progress bar while running
+        if (job.status === 'pending' || job.status === 'running') {
+          dots = (dots + 1) % 4;
+          const label = job.status === 'running' && job.method === 'rapidocr'
+            ? '🔍 Running OCR' + '.'.repeat(dots)
+            : '⚙️ Processing' + '.'.repeat(dots);
+          uploadText.textContent = label;
+          // Keep progress bar animated between 35–85%
+          const pct = 35 + Math.min(50, (Date.now() % 5000) / 100);
+          uploadProgressBar.style.width = pct + '%';
+          return;
+        }
+
+        clearInterval(pollInterval);
+
+        if (job.status === 'error') {
+          resetUploadUI();
+          showToast(job.error || 'Processing failed');
+          return;
+        }
+
+        if (job.status === 'done') {
+          if (job.chunks_count === 0) {
+            resetUploadUI();
+            showToast('No text found in PDF — even after OCR. Try another file.');
+            return;
+          }
+
+          // Success
+          uploadProgressBar.style.width = '100%';
+          setTimeout(() => {
+            uploadProgress.classList.remove('active');
+            uploadProgressBar.style.width = '0%';
+            uploadText.textContent = '';
+          }, 600);
+
+          documentLoaded = true;
+          statusDot.classList.add('loaded');
+          statusLabel.textContent = file.name;
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+
+          // Clear previous chat
+          chatArea.innerHTML = '';
+          welcome.style.display = 'flex';
+          chatArea.appendChild(welcome);
+          history = [];
+
+          const methodLabel = METHOD_LABELS[job.method] || job.method;
+          addSystemMsg(
+            `📄 **${file.name}** loaded — ${job.chunks_count} chunks indexed ${methodLabel ? '(' + methodLabel + ')' : ''}. Ready for questions!`
+          );
+        }
+      } catch (e) {
+        // Network hiccup — keep polling
+      }
+    }, 600);
+  }
+
+  function resetUploadUI() {
+    uploadProgress.classList.remove('active');
+    uploadProgressBar.style.width = '0%';
+    uploadArea.classList.remove('has-file');
+    fileName.textContent = '';
+    uploadText.textContent = 'Drop a PDF here or click to upload';
   }
 
   // ─── Send Question ───

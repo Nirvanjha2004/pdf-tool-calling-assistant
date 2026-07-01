@@ -1,7 +1,11 @@
 """
 FastAPI Endpoint — PDF Q&A Assistant API
 
-Serves both the API endpoints and the static frontend.
+Key design decisions:
+- /upload   → saves the file and starts a background job, returns instantly
+- /job/{id} → client polls this to know when processing is done
+- easyocr is pre-warmed at startup in a background thread so it's
+  ready by the time an image PDF is uploaded
 """
 
 import os
@@ -9,10 +13,10 @@ import re
 import sys
 import tempfile
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-# Add project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -21,140 +25,148 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from core.chat_loop import ask
-from tools.pdf_search import load_document, is_document_loaded, get_chunk_count
+from tools.pdf_search import (
+    load_document_async,
+    get_job_status,
+    is_document_loaded,
+    get_chunk_count,
+    get_extraction_method,
+    JobStatus,
+)
+from utils.pdf_parser import prewarm_ocr
 
-# ─── FastAPI App ─────────────────────────────────────────────────────────────
+
+# ─── Lifespan: pre-warm OCR model at startup ─────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Kick off easyocr model load in background — doesn't block startup
+    prewarm_ocr()
+    yield
+    # (shutdown logic here if needed)
+
+
+# ─── App ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="PDF Q&A Assistant API",
-    description=(
-        "Upload a PDF and ask natural-language questions. "
-        "The LLM automatically decides whether to use the calculator tool, "
-        "search the document, or answer from its own knowledge."
-    ),
-    version="1.0.0",
+    description="Upload a PDF and ask natural-language questions.",
+    version="2.0.0",
+    lifespan=lifespan,
 )
-
-# ─── Static Files ────────────────────────────────────────────────────────────
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
-
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
 def serve_frontend():
-    """Serve the single-page frontend."""
     index_path = STATIC_DIR / "index.html"
     if index_path.exists():
         return FileResponse(str(index_path))
-    return {
-        "message": "PDF Q&A Assistant with Tool-Calling",
-        "endpoints": {
-            "POST /upload": "Upload a PDF document (multipart/form-data)",
-            "POST /ask": 'Ask a question (JSON: {"question": "..."})',
-            "GET /health": "Health check",
-        },
-    }
+    return {"message": "PDF Q&A Assistant"}
 
 
-# ─── Pydantic Models ─────────────────────────────────────────────────────────
-
+# ─── Models ──────────────────────────────────────────────────────────────────
 
 class AskRequest(BaseModel):
     question: str
     history: Optional[list] = None
 
-
 class AskResponse(BaseModel):
     answer: str
 
-
 class UploadResponse(BaseModel):
+    job_id: str
+    message: str
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str          # pending | running | done | error
     message: str
     chunks_count: int
-
+    method: str          # pypdfium2 | pdfplumber | easyocr | none
+    error: Optional[str]
 
 class HealthResponse(BaseModel):
     status: str
     document_loaded: bool
     chunks_count: int
+    extraction_method: str
 
 
-# ─── API Endpoints ───────────────────────────────────────────────────────────
-
+# ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    """Check if the API is running and whether a document is loaded."""
     return HealthResponse(
         status="ok",
         document_loaded=is_document_loaded(),
         chunks_count=get_chunk_count(),
+        extraction_method=get_extraction_method(),
     )
 
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload_pdf(file: UploadFile = File(...)):
     """
-    Upload a PDF document to ask questions about.
+    Upload a PDF — returns a job_id immediately.
 
-    The PDF is parsed, text is extracted, and chunked into
-    overlapping segments for search. All stored in memory.
+    The file is saved to a temp location and processing starts in the
+    background. Poll GET /job/{job_id} to track progress.
+    For normal text PDFs this completes in < 1s.
+    For scanned/image PDFs, easyocr OCR runs in the background (~10-30s).
     """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
-    # Save uploaded file to a temporary location
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    # Save to a persistent temp file (background thread will clean it up)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    try:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
-
-    try:
-        result = load_document(tmp_path)
-
-        # Extract chunk count from the result message
-        match = re.search(r"(\d+) chunks?", result)
-        chunks = int(match.group(1)) if match else 0
-
-        if chunks == 0:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "No text could be extracted from this PDF. "
-                    "It may be a scanned/image-only PDF. "
-                    "Try a PDF with selectable text."
-                ),
-            )
-
-        return UploadResponse(message=result, chunks_count=chunks)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {e}")
     finally:
-        # Clean up the temp file
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        tmp.close()
+
+    job_id = load_document_async(tmp_path)
+
+    return UploadResponse(
+        job_id=job_id,
+        message="Upload received. Processing started.",
+    )
+
+
+@app.get("/job/{job_id}", response_model=JobStatusResponse)
+def get_job(job_id: str):
+    """
+    Poll this endpoint to check if PDF processing is complete.
+
+    Status values:
+      pending  — queued, not started yet
+      running  — actively extracting / OCR-ing
+      done     — ready for questions
+      error    — extraction failed
+    """
+    job = get_job_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    return JobStatusResponse(
+        job_id=job_id,
+        status=job["status"],
+        message=job["message"],
+        chunks_count=job.get("chunks_count", 0),
+        method=job.get("method", "none"),
+        error=job.get("error"),
+    )
 
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(request: AskRequest):
-    """
-    Ask a natural-language question.
-
-    The LLM automatically decides whether to:
-    - Use the calculator tool (for math/computations)
-    - Search the loaded document (for document questions)
-    - Answer from its own knowledge (for general questions)
-
-    Optionally include a 'history' array with previous messages
-    to continue a conversation.
-    """
+    """Ask a natural-language question about the loaded document."""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
-
     try:
         result = ask(request.question, request.history)
         return AskResponse(answer=result["content"])
@@ -164,11 +176,9 @@ async def ask_question(request: AskRequest):
         raise HTTPException(status_code=500, detail=f"Error: {e}")
 
 
-# ─── Run (for development) ───────────────────────────────────────────────────
+# ─── Dev runner ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-
-    # Note: .env is loaded automatically by core/llm_client.py on import
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("api.main:app", host="0.0.0.0", port=port, reload=True)

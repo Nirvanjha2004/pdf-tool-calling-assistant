@@ -118,6 +118,16 @@ async def upload_pdf(file: UploadFile = File(...)):
         match = re.search(r"(\d+) chunks?", result)
         chunks = int(match.group(1)) if match else 0
 
+        if chunks == 0:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No text could be extracted from this PDF. "
+                    "It may be a scanned/image-only PDF. "
+                    "Try a PDF with selectable text."
+                ),
+            )
+
         return UploadResponse(message=result, chunks_count=chunks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {e}")
